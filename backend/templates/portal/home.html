@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} | When Portal{% endblock title %}
+
+{% block content %}
+<div class="home-section">
+    <h2>Welcome to When Portal</h2>
+    <p>This is a unified Django portal that serves both frontend and backend from a single application.</p>
+    
+    <div class="features">
+        <div class="feature-card">
+            <h3>Django Framework</h3>
+            <p>Built with Django for both frontend views and backend API endpoints.</p>
+        </div>
+        
+        <div class="feature-card">
+            <h3>Django REST Framework</h3>
+            <p>API functionality is provided by Django REST Framework.</p>
+        </div>
+        
+        <div class="feature-card">
+            <h3>SQLite Database</h3>
+            <p>Using Django's built-in database capabilities for data storage.</p>
+        </div>
+    </div>
+    
+    <div class="cta-section">
+        <h3>Get Started</h3>
+        <p>Explore our portal features:</p>
+        <div class="button-group">
+            <a href="/api/hello/" class="button">View API</a>
+            <a href="{% url 'admin:index' %}" class="button">Admin Dashboard</a>
+        </div>
+    </div>
+</div>
+{% endblock content %} 
