@@ -19,4 +19,8 @@ urlpatterns = [
     
     # Application API endpoints
     path('v1/application/get', views.get_applications, name='get_applications'),
+    
+    # Placement Prediction API endpoints
+    path('v1/placement/predict', views.predict_placement_api, name='predict_placement'),
+    path('v1/placement/get', views.get_placement_prediction, name='get_placement_prediction'),
 ] 

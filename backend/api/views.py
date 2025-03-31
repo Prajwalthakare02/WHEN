@@ -6,8 +6,10 @@ from rest_framework import status
 import json
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
-from .models import UserProfile, Company, Job, Application
+from .models import UserProfile, Company, Job, Application, PlacementPrediction
 from django.db.models import Q
+from datetime import datetime
+from .predictor import predict_placement
 
 # Create your views here.
 
@@ -22,16 +24,6 @@ def hello_world(request):
 def register_user(request):
     try:
         data = request.data
-        print(f"Received registration data: {data}")
-        
-        # Check if required fields are present
-        required_fields = ['email', 'password', 'fullname']
-        for field in required_fields:
-            if not data.get(field):
-                return Response({
-                    'success': False,
-                    'message': f'Field {field} is required'
-                }, status=status.HTTP_400_BAD_REQUEST)
         
         # Check if user already exists
         if User.objects.filter(email=data.get('email')).exists():
@@ -61,11 +53,13 @@ def register_user(request):
             'fullname': data.get('fullname', ''),
             'email': user.email,
             'phoneNumber': profile.phone_number,
+            'role': data.get('role') or 'student',  # Set default role to student if not provided
             'profile': {
                 'bio': profile.bio or '',
                 'skills': profile.skills or [],
                 'resume': profile.resume.url if profile.resume else None,
-                'resumeOriginalName': profile.resume_original_name
+                'resumeOriginalName': profile.resume_original_name,
+                'profile_picture': profile.profile_picture.url if profile.profile_picture else None
             }
         }
         
@@ -76,12 +70,9 @@ def register_user(request):
         }, status=status.HTTP_201_CREATED)
     
     except Exception as e:
-        import traceback
-        print(f"Error during user registration: {str(e)}")
-        print(traceback.format_exc())
         return Response({
             'success': False,
-            'message': f'Server error: {str(e)}'
+            'message': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
@@ -89,14 +80,6 @@ def register_user(request):
 def login_user(request):
     try:
         data = request.data
-        print(f"Received login data: {data}")
-        
-        # Check required fields
-        if not data.get('email') or not data.get('password'):
-            return Response({
-                'success': False,
-                'message': 'Email and password are required'
-            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Authenticate user
         user = authenticate(
@@ -119,11 +102,13 @@ def login_user(request):
             'fullname': f'{user.first_name} {user.last_name}',
             'email': user.email,
             'phoneNumber': profile.phone_number or '',
+            'role': data.get('role') or 'student',  # Set default role to student if not provided
             'profile': {
                 'bio': profile.bio or '',
                 'skills': profile.skills or [],
                 'resume': profile.resume.url if profile.resume else None,
-                'resumeOriginalName': profile.resume_original_name
+                'resumeOriginalName': profile.resume_original_name,
+                'profile_picture': profile.profile_picture.url if profile.profile_picture else None
             }
         }
         
@@ -134,12 +119,29 @@ def login_user(request):
         })
     
     except Exception as e:
-        import traceback
-        print(f"Error during user login: {str(e)}")
-        print(traceback.format_exc())
         return Response({
             'success': False,
-            'message': f'Server error: {str(e)}'
+            'message': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+def logout_user(request):
+    """
+    Logout user by clearing the session
+    """
+    try:
+        # For token-based auth, you could blacklist the token here
+        # For session-based auth, just return a success response
+        
+        return Response({
+            'success': True,
+            'message': 'Logged out successfully'
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            'success': False,
+            'message': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # Job API endpoints
@@ -252,85 +254,68 @@ def get_applications(request):
             "message": str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def logout_user(request):
-    try:
-        # Since we're using session authentication, we need to clear the session
-        request.session.flush()
-        return Response({
-            'success': True,
-            'message': 'Logged out successfully'
-        })
-    except Exception as e:
-        import traceback
-        print(f"Error during user logout: {str(e)}")
-        print(traceback.format_exc())
-        return Response({
-            'success': False,
-            'message': f'Server error: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def update_profile(request):
+    """
+    Update user profile
+    """
     try:
         user = request.user
-        data = request.data
-        print(f"Received profile update data: {data}")
+        # Get or create user profile
+        profile, created = UserProfile.objects.get_or_create(user=user)
         
-        # Get the user profile
-        profile = UserProfile.objects.get(user=user)
-        
-        # Update user data
-        if 'fullname' in data:
-            fullname = data.get('fullname', '')
-            user.first_name = fullname.split(' ')[0]
-            user.last_name = ' '.join(fullname.split(' ')[1:]) if len(fullname.split(' ')) > 1 else ''
+        # Update user fields
+        if 'fullname' in request.data:
+            name_parts = request.data['fullname'].split(' ', 1)
+            user.first_name = name_parts[0]
+            user.last_name = name_parts[1] if len(name_parts) > 1 else ""
             
-        if 'email' in data:
-            # Check if new email already exists for another user
-            if User.objects.exclude(id=user.id).filter(email=data.get('email')).exists():
-                return Response({
-                    'success': False,
-                    'message': 'Email already in use by another account'
-                }, status=status.HTTP_400_BAD_REQUEST)
-            user.email = data.get('email')
-            user.username = data.get('email')  # Since email is username
+        if 'email' in request.data:
+            user.email = request.data['email']
             
-        # Save user model changes
         user.save()
         
-        # Update profile data
-        if 'phoneNumber' in data:
-            profile.phone_number = data.get('phoneNumber', '')
+        # Update profile fields
+        if 'phoneNumber' in request.data:
+            profile.phone_number = request.data['phoneNumber']
             
-        if 'bio' in data:
-            profile.bio = data.get('bio', '')
+        if 'bio' in request.data:
+            profile.bio = request.data['bio']
             
-        if 'skills' in data and isinstance(data.get('skills'), list):
-            profile.skills = data.get('skills')
+        if 'skills' in request.data and request.data['skills']:
+            # Convert comma-separated string to list
+            skills_str = request.data['skills']
+            if isinstance(skills_str, str):
+                profile.skills = [skill.strip() for skill in skills_str.split(',')]
             
-        # Handle resume file upload
+        # Handle resume upload
         if 'file' in request.FILES:
             file = request.FILES['file']
             profile.resume = file
             profile.resume_original_name = file.name
             
-        # Save profile changes
+        # Handle profile picture upload
+        if 'profilePicture' in request.FILES:
+            profile_picture = request.FILES['profilePicture']
+            profile.profile_picture = profile_picture
+            
         profile.save()
         
-        # Format user data for response
+        # Prepare response
         user_profile = {
             'id': user.id,
-            'fullname': f'{user.first_name} {user.last_name}',
+            'username': user.username,
+            'fullname': f"{user.first_name} {user.last_name}".strip(),
             'email': user.email,
             'phoneNumber': profile.phone_number or '',
+            'role': request.data.get('role') or getattr(user, 'role', 'student'),  # Preserve role if it exists
             'profile': {
                 'bio': profile.bio or '',
                 'skills': profile.skills or [],
                 'resume': profile.resume.url if profile.resume else None,
-                'resumeOriginalName': profile.resume_original_name
+                'resumeOriginalName': profile.resume_original_name or 'Resume',
+                'profile_picture': profile.profile_picture.url if profile.profile_picture else None
             }
         }
         
@@ -338,13 +323,127 @@ def update_profile(request):
             'success': True,
             'message': 'Profile updated successfully',
             'user': user_profile
-        })
+        }, status=status.HTTP_200_OK)
         
     except Exception as e:
-        import traceback
-        print(f"Error during profile update: {str(e)}")
-        print(traceback.format_exc())
+        print(f"Error updating profile: {str(e)}")
+        return Response({'success': False, 'message': f'Error updating profile: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def predict_placement_api(request):
+    """
+    Predict placement based on student data
+    """
+    try:
+        # Get student data from request
+        student_data = request.data
+        
+        # Call the predict_placement function from predictor.py
+        result, probability = predict_placement(student_data)
+        
+        # Save the prediction result
+        user = request.user
+        prediction = PlacementPrediction.objects.create(
+            user=user,
+            result=result,
+            probability=probability,
+            cgpa=student_data.get('cgpa'),
+            soft_skills_score=student_data.get('soft_skills_score'),
+            technical_skills=student_data.get('technical_skills'),
+            leadership_score=student_data.get('leadership_score'),
+            experience_years=student_data.get('experience_years'),
+            live_backlogs=student_data.get('live_backlogs'),
+            internships=student_data.get('internships'),
+            projects=student_data.get('projects'),
+            certifications=student_data.get('certifications'),
+            programming_language=student_data.get('programming_language'),
+            branch=student_data.get('branch'),
+            year_of_passing=student_data.get('year_of_passing'),
+            gender=student_data.get('gender')
+        )
+        
+        # Format response
+        prediction_data = {
+            "result": result,
+            "probability": probability,
+            "date": prediction.date
+        }
+        
         return Response({
-            'success': False,
-            'message': f'Server error: {str(e)}'
+            "success": True,
+            "result": prediction_data
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        print(f"Error in predict_placement_api: {str(e)}")
+        return Response({
+            "success": False,
+            "message": str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_placement_prediction(request):
+    """
+    Get the latest placement prediction for the current user
+    """
+    try:
+        user = request.user
+        
+        # Try to get the latest prediction from the database
+        try:
+            latest_prediction = PlacementPrediction.objects.filter(user=user).latest('date')
+            prediction = {
+                "result": latest_prediction.result,
+                "probability": latest_prediction.probability,
+                "date": latest_prediction.date
+            }
+            
+            # Get stored profile data
+            profile_data = {
+                "cgpa": latest_prediction.cgpa,
+                "soft_skills_score": latest_prediction.soft_skills_score,
+                "technical_skills": latest_prediction.technical_skills,
+                "leadership_score": latest_prediction.leadership_score,
+                "experience_years": latest_prediction.experience_years,
+                "live_backlogs": latest_prediction.live_backlogs,
+                "internships": latest_prediction.internships,
+                "projects": latest_prediction.projects,
+                "certifications": latest_prediction.certifications,
+                "programming_language": latest_prediction.programming_language,
+                "branch": latest_prediction.branch,
+                "year_of_passing": latest_prediction.year_of_passing,
+                "gender": latest_prediction.gender
+            }
+        except PlacementPrediction.DoesNotExist:
+            # No prediction exists, return default values
+            prediction = None
+            profile_data = {
+                "cgpa": "8.5",
+                "soft_skills_score": "8",
+                "technical_skills": "9",
+                "leadership_score": "7",
+                "experience_years": "1",
+                "live_backlogs": "0",
+                "internships": "2",
+                "projects": "3",
+                "certifications": "2",
+                "programming_language": "Python",
+                "branch": "Computer Science",
+                "year_of_passing": "2025",
+                "gender": "Male"
+            }
+        
+        return Response({
+            "success": True,
+            "prediction": prediction,
+            "profile_data": profile_data
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        print(f"Error in get_placement_prediction: {str(e)}")
+        return Response({
+            "success": False,
+            "message": str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

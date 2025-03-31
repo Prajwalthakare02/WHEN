@@ -148,14 +148,22 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS settings
-CORS_ALLOW_ALL_ORIGINS = True  # Only use this for development!
+# For debugging and development, temporarily allow all origins
+CORS_ALLOW_ALL_ORIGINS = True
 
-# If you prefer to be more restrictive, uncomment and use this instead:
-# CORS_ALLOWED_ORIGINS = [
-#     "http://localhost:5173",  # Vite default port
-#     "http://localhost:5174",  # Alternative Vite port
-#     "http://localhost:5175",  # Another alternative Vite port
-# ]
+# If you want to restrict to specific origins later, use this:
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",  # Vite default port
+    "http://localhost:5174",  # Alternative Vite port
+    "http://localhost:5175",  # Another alternative Vite port
+    "http://localhost:5176",  # Another alternative Vite port
+    "http://localhost:5177",  # Another alternative Vite port
+    "http://127.0.0.1:5173",  # Same as localhost but with IP
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175", 
+    "http://127.0.0.1:5176",
+    "http://127.0.0.1:5177",
+]
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
@@ -178,6 +186,12 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
 ]
 
+# Add CORS_EXPOSE_HEADERS to ensure headers are properly exposed
+CORS_EXPOSE_HEADERS = [
+    "content-type",
+    "content-length",
+]
+
 # REST Framework settings
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
@@ -185,10 +199,5 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.BasicAuthentication',
-    ],
-    'DEFAULT_RENDERER_CLASSES': [
-        'rest_framework.renderers.JSONRenderer',
-        'rest_framework.renderers.BrowsableAPIRenderer',
     ],
 }
