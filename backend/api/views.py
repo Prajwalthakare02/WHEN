@@ -4,12 +4,62 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework import status
 import json
-from django.contrib.auth import authenticate
+from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from .models import UserProfile, Company, Job, Application, PlacementPrediction
 from django.db.models import Q
 from datetime import datetime
 from .predictor import predict_placement
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.authtoken.models import Token
+import logging
+from django.conf import settings
+import os
+import base64
+from django.core.files.base import ContentFile
+import re
+import random
+import string
+import uuid
+from django.contrib.auth import get_user_model
+import requests
+from functools import wraps
+from django.middleware.csrf import get_token
+
+# Set up logger
+logger = logging.getLogger(__name__)
+
+User = get_user_model()
+
+# Modified authentication decorator to handle both cookie and token auth
+def token_auth_required(view_func):
+    """Custom decorator that validates token from cookies or Authorization header"""
+    @wraps(view_func)
+    def _wrapped_view(request, *args, **kwargs):
+        # Log auth headers for debugging
+        logger.info(f"Auth debug - Headers: {request.headers.get('Authorization')}")
+        
+        # First check if user is already authenticated via session
+        if request.user and request.user.is_authenticated:
+            return view_func(request, *args, **kwargs)
+            
+        # Then check for token in Authorization header
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            token_key = auth_header.split(' ')[1]
+            try:
+                token = Token.objects.get(key=token_key)
+                request.user = token.user
+                return view_func(request, *args, **kwargs)
+            except Token.DoesNotExist:
+                logger.warning(f"Invalid token: {token_key}")
+                return Response({"success": False, "message": "Invalid token"}, status=401)
+                
+        # Finally, return unauthorized if no valid auth method
+        return Response({"success": False, "message": "Authentication required"}, status=401)
+    
+    return _wrapped_view
 
 # Create your views here.
 
@@ -21,12 +71,17 @@ def hello_world(request):
 # User API endpoints
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@csrf_exempt  # Temporarily exempt CSRF for testing
 def register_user(request):
     try:
         data = request.data
         
+        # Log the incoming request data for debugging
+        logger.info(f"Registration attempt for email: {data.get('email')}")
+        
         # Check if user already exists
         if User.objects.filter(email=data.get('email')).exists():
+            logger.warning(f"Registration failed: Email already exists - {data.get('email')}")
             return Response({
                 'success': False,
                 'message': 'User with this email already exists'
@@ -41,11 +96,15 @@ def register_user(request):
             last_name=' '.join(data.get('fullname', '').split(' ')[1:]) if len(data.get('fullname', '').split(' ')) > 1 else ''
         )
         
-        # Create user profile
+        # Create user profile with role
         profile = UserProfile.objects.create(
             user=user,
-            phone_number=data.get('phoneNumber', '')
+            phone_number=data.get('phoneNumber', ''),
+            role=data.get('role', 'student')  # Set role with default as student
         )
+        
+        # Create token for the new user
+        token = Token.objects.create(user=user)
         
         # Format user data for response
         user_profile = {
@@ -53,7 +112,7 @@ def register_user(request):
             'fullname': data.get('fullname', ''),
             'email': user.email,
             'phoneNumber': profile.phone_number,
-            'role': data.get('role') or 'student',  # Set default role to student if not provided
+            'role': profile.role,
             'profile': {
                 'bio': profile.bio or '',
                 'skills': profile.skills or [],
@@ -63,13 +122,30 @@ def register_user(request):
             }
         }
         
-        return Response({
+        # Log in the user
+        login(request, user)
+        
+        response = Response({
             'success': True,
             'message': 'User registered successfully',
-            'user': user_profile
+            'user': user_profile,
+            'token': token.key
         }, status=status.HTTP_201_CREATED)
+        
+        # Set token in cookie
+        response.set_cookie(
+            'auth_token',
+            token.key,
+            httponly=True,
+            samesite='Lax',
+            max_age=86400  # 24 hours
+        )
+        
+        logger.info(f"User registered successfully: {user.email}")
+        return response
     
     except Exception as e:
+        logger.error(f"Registration error: {str(e)}")
         return Response({
             'success': False,
             'message': str(e)
@@ -77,48 +153,83 @@ def register_user(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@csrf_exempt  # Temporarily exempt CSRF for testing
 def login_user(request):
     try:
         data = request.data
+        username = data.get('email', '').lower()
+        password = data.get('password', '')
+        role = data.get('role', 'student')
+        
+        # Log the incoming request data for debugging
+        logger.info(f"Login attempt for user: {username}")
         
         # Authenticate user
-        user = authenticate(
-            username=data.get('email'),  # Using email as username
-            password=data.get('password')
-        )
+        user = authenticate(request, username=username, password=password)
         
-        if not user:
+        if user is not None:
+            # Set session
+            login(request, user)
+            
+            # Delete any existing tokens for this user
+            Token.objects.filter(user=user).delete()
+            
+            # Create a new token
+            token = Token.objects.create(user=user)
+            
+            # Get or create profile with role
+            profile, created = UserProfile.objects.get_or_create(
+                user=user,
+                defaults={'role': role}
+            )
+            
+            # Update role if it's different
+            if profile.role != role:
+                profile.role = role
+                profile.save()
+            
+            user_data = {
+                'id': user.id,
+                'username': user.username,
+                'fullname': f"{user.first_name} {user.last_name}".strip(),
+                'email': user.email,
+                'role': profile.role,
+                'phoneNumber': profile.phone_number or '',
+                'profile': {
+                    'bio': profile.bio or '',
+                    'skills': profile.skills or [],
+                    'resume': profile.resume.url if profile.resume else None,
+                    'resumeOriginalName': profile.resume_original_name or 'Resume',
+                    'profile_picture': profile.profile_picture.url if profile.profile_picture else None
+                }
+            }
+            
+            response = Response({
+                'success': True,
+                'message': 'Login successful',
+                'user': user_data,
+                'token': token.key
+            })
+            
+            # Set token in cookie
+            response.set_cookie(
+                'auth_token',
+                token.key,
+                httponly=True,
+                samesite='Lax',
+                max_age=86400  # 24 hours
+            )
+            
+            return response
+        else:
+            logger.warning(f"Failed login attempt for user: {username}")
             return Response({
                 'success': False,
                 'message': 'Invalid credentials'
             }, status=status.HTTP_401_UNAUTHORIZED)
-        
-        # Get or create user profile
-        profile, created = UserProfile.objects.get_or_create(user=user)
-        
-        # Format user data for response
-        user_profile = {
-            'id': user.id,
-            'fullname': f'{user.first_name} {user.last_name}',
-            'email': user.email,
-            'phoneNumber': profile.phone_number or '',
-            'role': data.get('role') or 'student',  # Set default role to student if not provided
-            'profile': {
-                'bio': profile.bio or '',
-                'skills': profile.skills or [],
-                'resume': profile.resume.url if profile.resume else None,
-                'resumeOriginalName': profile.resume_original_name,
-                'profile_picture': profile.profile_picture.url if profile.profile_picture else None
-            }
-        }
-        
-        return Response({
-            'success': True,
-            'message': 'Login successful',
-            'user': user_profile
-        })
     
     except Exception as e:
+        logger.error(f"Login error: {str(e)}")
         return Response({
             'success': False,
             'message': str(e)
@@ -218,10 +329,9 @@ def get_companies(request):
 
 # Application API endpoints
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@token_auth_required  # Use our custom auth decorator
 def get_applications(request):
     try:
-        # Get current user
         user = request.user
         
         # Query applications for current user
@@ -249,6 +359,7 @@ def get_applications(request):
             "application": applications
         })
     except Exception as e:
+        logger.error(f"Error in get_applications: {str(e)}")
         return Response({
             "success": False,
             "message": str(e)
@@ -330,60 +441,61 @@ def update_profile(request):
         return Response({'success': False, 'message': f'Error updating profile: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
 def predict_placement_api(request):
-    """
-    Predict placement based on student data
-    """
     try:
-        # Get student data from request
-        student_data = request.data
+        user = get_user_from_token(request)
+        if not user:
+            logger.error(f"Authentication failed in predict_placement_api: {request.META.get('HTTP_AUTHORIZATION', 'No auth header')}")
+            return Response({
+                "success": False,
+                "message": "Authentication required"
+            }, status=401)
+            
+        # Check if user profile exists
+        profile = UserProfile.objects.filter(user=user).first()
+        if not profile:
+            return Response({
+                "success": False,
+                "message": "User profile not found"
+            }, status=404)
         
-        # Call the predict_placement function from predictor.py
-        result, probability = predict_placement(student_data)
+        # Extract data from request
+        data = request.data
+        logger.info(f"Received prediction data: {data}")
         
-        # Save the prediction result
-        user = request.user
+        # Call the function to get prediction
+        placement_result = predict_placement(data)
+        
+        # Save prediction to database
         prediction = PlacementPrediction.objects.create(
-            user=user,
-            result=result,
-            probability=probability,
-            cgpa=student_data.get('cgpa'),
-            soft_skills_score=student_data.get('soft_skills_score'),
-            technical_skills=student_data.get('technical_skills'),
-            leadership_score=student_data.get('leadership_score'),
-            experience_years=student_data.get('experience_years'),
-            live_backlogs=student_data.get('live_backlogs'),
-            internships=student_data.get('internships'),
-            projects=student_data.get('projects'),
-            certifications=student_data.get('certifications'),
-            programming_language=student_data.get('programming_language'),
-            branch=student_data.get('branch'),
-            year_of_passing=student_data.get('year_of_passing'),
-            gender=student_data.get('gender')
+            user=profile,
+            ssc_percentage=data.get('ssc_percentage'),
+            hsc_percentage=data.get('hsc_percentage'),
+            degree_percentage=data.get('degree_percentage'),
+            work_experience=data.get('work_experience'),
+            etest_percentage=data.get('etest_percentage'),
+            mba_percentage=data.get('mba_percentage'),
+            gender=data.get('gender'),
+            specialisation=data.get('specialisation'),
+            placement_prediction=placement_result
         )
-        
-        # Format response
-        prediction_data = {
-            "result": result,
-            "probability": probability,
-            "date": prediction.date
-        }
         
         return Response({
             "success": True,
-            "result": prediction_data
-        }, status=status.HTTP_200_OK)
+            "message": "Prediction created successfully",
+            "placement": placement_result,
+            "prediction_id": prediction.id
+        }, status=201)
     
     except Exception as e:
-        print(f"Error in predict_placement_api: {str(e)}")
+        logger.error(f"Error in predict_placement_api: {str(e)}")
         return Response({
             "success": False,
             "message": str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }, status=500)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@token_auth_required  # Use our custom auth decorator
 def get_placement_prediction(request):
     """
     Get the latest placement prediction for the current user
@@ -442,8 +554,197 @@ def get_placement_prediction(request):
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
-        print(f"Error in get_placement_prediction: {str(e)}")
+        logger.error(f"Error in get_placement_prediction: {str(e)}")
         return Response({
             "success": False,
             "message": str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+def get_user_from_token(request):
+    """Extract user from token in Authorization header or cookies"""
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    
+    if auth_header.startswith('Bearer '):
+        token_key = auth_header.split(' ')[1]
+        try:
+            token = Token.objects.get(key=token_key)
+            return token.user
+        except Token.DoesNotExist:
+            return None
+    
+    return request.user
+
+@api_view(['GET'])
+def get_applications(request):
+    try:
+        user = get_user_from_token(request)
+        if not user:
+            logger.error(f"Authentication failed for request: {request.META.get('HTTP_AUTHORIZATION', 'No auth header')}")
+            return Response({
+                "success": False,
+                "message": "Authentication required"
+            }, status=401)
+            
+        logger.info(f"User authenticated: {user.username}")
+        
+        profile = UserProfile.objects.filter(user=user).first()
+        
+        if profile and profile.role == "student":
+            applications = Application.objects.filter(applicant__user=user)
+            serialized_data = []
+            
+            for application in applications:
+                job = application.job
+                company = job.company
+                
+                serialized_data.append({
+                    "id": application.id,
+                    "status": application.status,
+                    "application_date": application.application_date,
+                    "job": {
+                        "id": job.id,
+                        "title": job.title,
+                        "salary": job.salary,
+                        "location": job.location,
+                        "description": job.description,
+                        "created_at": job.created_at,
+                        "company": {
+                            "id": company.id,
+                            "name": company.name,
+                            "email": company.email,
+                            "logo": company.logo.url if company.logo else None
+                        }
+                    }
+                })
+            
+            return Response({
+                "success": True,
+                "data": serialized_data,
+                "message": "Applications fetched"
+            }, status=200)
+        
+        else:
+            return Response({
+                "success": False,
+                "message": "Only students can view their applications"
+            }, status=400)
+    
+    except Exception as e:
+        logger.error(f"Error in get_applications: {str(e)}")
+        return Response({
+            "success": False,
+            "message": str(e)
+        }, status=500)
+
+@api_view(['POST'])
+@csrf_exempt
+@token_auth_required
+def chatbot_api(request):
+    """
+    API endpoint for student queries using Hugging Face models
+    """
+    try:
+        # Get the user query from the request
+        user_query = request.data.get('query', '')
+        chat_history = request.data.get('history', [])
+        
+        if not user_query:
+            return Response({"error": "Query is required"}, status=400)
+        
+        # Hugging Face API endpoint for inference
+        API_URL = "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf"
+        headers = {
+            "Authorization": "Bearer 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",
+            "Content-Type": "application/json"
+        }
+        
+        # Format the input for the model with enhanced system context
+        conversation = [
+            {
+                "role": "system", 
+                "content": """You are an advanced placement assistant for college students. Your expertise includes:
+                1. Resume Building: Help create impactful resumes, optimize content, and highlight key achievements
+                2. Interview Preparation: Guide on technical and behavioral interviews, common questions, and best practices
+                3. Career Development: Provide insights on industry trends, skill development, and career paths
+                4. Placement Process: Explain placement procedures, company expectations, and selection criteria
+                5. Technical Skills: Advise on programming languages, tools, and technologies in demand
+                6. Soft Skills: Guide on communication, leadership, and teamwork development
+                7. Profile Optimization: Help improve academic and professional profiles
+                8. Placement Prediction: Analyze placement chances based on academic performance and skills
+                
+                Provide specific, actionable advice while maintaining a supportive and encouraging tone. Focus on practical tips and real-world applications."""
+            }
+        ]
+        
+        # Add chat history
+        for msg in chat_history:
+            role = "user" if msg.get("isUser") else "assistant"
+            conversation.append({"role": role, "content": msg.get("message", "")})
+        
+        # Add the current query
+        conversation.append({"role": "user", "content": user_query})
+        
+        payload = {
+            "inputs": conversation,
+            "parameters": {
+                "max_new_tokens": 300,
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "do_sample": True,
+                "repetition_penalty": 1.2
+            }
+        }
+        
+        # Make request to Hugging Face API
+        response = requests.post(API_URL, headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            # Extract the generated response from the model's output
+            bot_response = result[0]["generated_text"]
+            
+            # For LLaMA models, extract just the assistant's last response
+            if isinstance(bot_response, str):
+                # Try to extract just the assistant's response
+                assistant_prefix = "assistant:"
+                if assistant_prefix in bot_response.lower():
+                    parts = bot_response.lower().split(assistant_prefix)
+                    if len(parts) > 1:
+                        bot_response = parts[-1].strip()
+            
+            return Response({
+                "response": bot_response,
+                "success": True
+            })
+        else:
+            # Enhanced fallback responses
+            fallback_responses = [
+                "I can help you optimize your resume, prepare for interviews, and develop your career path. What specific guidance do you need?",
+                "For placement success, focus on both technical excellence and soft skills. Which area would you like to improve first?",
+                "Your profile shows potential! Let's enhance it further by highlighting your achievements and adding relevant projects.",
+                "For technical interviews, practice coding problems and system design. Would you like specific resources or practice problems?",
+                "I can help you understand placement procedures and company expectations. What would you like to know more about?",
+                "Let's work on developing your skills. Which technical or soft skill would you like to focus on first?"
+            ]
+            return Response({
+                "response": random.choice(fallback_responses),
+                "success": True,
+                "is_fallback": True
+            })
+            
+    except Exception as e:
+        logger.error(f"Error in chatbot_api: {str(e)}")
+        return Response({
+            "error": "An error occurred while processing your request",
+            "success": False
+        }, status=500)
+
+# Add this function for CSRF token
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_csrf_token(request):
+    """
+    Get CSRF token for frontend to use in requests
+    """
+    csrf_token = get_token(request)
+    return JsonResponse({'csrfToken': csrf_token})

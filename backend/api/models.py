@@ -3,6 +3,11 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 
 class UserProfile(models.Model):
+    ROLE_CHOICES = [
+        ('student', 'Student'),
+        ('recruiter', 'Recruiter'),
+    ]
+    
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='user_profile')
     bio = models.TextField(blank=True, null=True)
     phone_number = models.CharField(max_length=15, blank=True, null=True)
@@ -10,6 +15,7 @@ class UserProfile(models.Model):
     profile_picture = models.ImageField(upload_to='profile_pictures/', blank=True, null=True)
     resume = models.FileField(upload_to='resumes/', blank=True, null=True)
     resume_original_name = models.CharField(max_length=255, blank=True, null=True)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='student')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -76,25 +82,20 @@ class Application(models.Model):
 
 # Add the missing PlacementPrediction model
 class PlacementPrediction(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='placement_predictions')
-    result = models.CharField(max_length=20)  # "Placed" or "Not Placed"
-    probability = models.FloatField()  # Probability value (0-100)
-    date = models.DateTimeField(auto_now=True)
-    
-    # Academic data
-    cgpa = models.FloatField(null=True, blank=True)
-    soft_skills_score = models.FloatField(null=True, blank=True)
-    technical_skills = models.FloatField(null=True, blank=True)
-    leadership_score = models.FloatField(null=True, blank=True)
-    experience_years = models.FloatField(null=True, blank=True)
-    live_backlogs = models.IntegerField(null=True, blank=True)
-    internships = models.IntegerField(null=True, blank=True)
-    projects = models.IntegerField(null=True, blank=True)
-    certifications = models.IntegerField(null=True, blank=True)
-    programming_language = models.CharField(max_length=50, null=True, blank=True)
-    branch = models.CharField(max_length=50, null=True, blank=True)
-    year_of_passing = models.IntegerField(null=True, blank=True)
-    gender = models.CharField(max_length=10, null=True, blank=True)
+    """
+    Model for storing placement predictions
+    """
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name='predictions')
+    ssc_percentage = models.FloatField()
+    hsc_percentage = models.FloatField()
+    degree_percentage = models.FloatField()
+    etest_percentage = models.FloatField()
+    mba_percentage = models.FloatField()
+    work_experience = models.IntegerField()
+    gender = models.CharField(max_length=1)
+    specialisation = models.CharField(max_length=20)
+    placement_prediction = models.BooleanField()
+    created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
-        return f"{self.user.username}'s placement prediction - {self.result}"
+        return f"Prediction for {self.user} - {'Placed' if self.placement_prediction else 'Not Placed'}"

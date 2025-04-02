@@ -3,6 +3,7 @@ Placement Prediction module for predicting student placement
 """
 import os
 import random
+import pandas as pd
 
 # In a real implementation, you would have:
 # import joblib
@@ -11,86 +12,88 @@ import random
 
 def predict_placement(student_data):
     """
-    Predict whether a student will be placed based on their academic and skills data
+    Predict whether a student will be placed based on their academic data
     
     Args:
-        student_data (dict): Student's academic and skills data
-            - cgpa: float - Student's CGPA (0-10)
-            - soft_skills_score: float - Soft skills score (0-10)
-            - technical_skills: float - Technical skills score (0-10)
-            - leadership_score: float - Leadership score (0-10)
-            - experience_years: float - Years of experience
-            - live_backlogs: int - Number of active backlogs
-            - internships: int - Number of internships completed
-            - projects: int - Number of projects completed
-            - certifications: int - Number of certifications
-            - programming_language: str - Primary programming language
-            - branch: str - Branch of study
-            - year_of_passing: int - Year of passing
-            - gender: str - Gender
+        student_data (dict): Student's academic data
+            - ssc_percentage: float - 10th standard percentage
+            - hsc_percentage: float - 12th standard percentage
+            - degree_percentage: float - Degree percentage 
+            - etest_percentage: float - Employability test percentage
+            - mba_percentage: float - MBA percentage
+            - work_experience: int - Months of work experience
+            - gender: str - Gender (M/F)
+            - specialisation: str - Specialisation (Mkt&Fin, Mkt&HR)
     
     Returns:
-        tuple: (result, probability)
-            - result: "Placed" or "Not Placed"
-            - probability: Float between 0 and 100 representing placement probability
+        bool: True if placed, False if not placed
     """
     try:
-        # In a real implementation, you would:
-        # 1. Load your ML model
-        # model = joblib.load('path/to/model.pkl')
+        # Convert data to appropriate types
+        ssc_percentage = float(student_data.get('ssc_percentage', 0))
+        hsc_percentage = float(student_data.get('hsc_percentage', 0))
+        degree_percentage = float(student_data.get('degree_percentage', 0))
+        etest_percentage = float(student_data.get('etest_percentage', 0))
+        mba_percentage = float(student_data.get('mba_percentage', 0))
+        work_experience = int(student_data.get('work_experience', 0))
+        gender = student_data.get('gender', 'M')
+        specialisation = student_data.get('specialisation', 'Mkt&Fin')
         
-        # 2. Preprocess the input data
-        # features = preprocess_data(student_data)
+        # Convert to dataframe for consistency with real ML implementation
+        df = pd.DataFrame({
+            'ssc_p': [ssc_percentage],
+            'hsc_p': [hsc_percentage],
+            'degree_p': [degree_percentage],
+            'etest_p': [etest_percentage],
+            'mba_p': [mba_percentage],
+            'workex': [1 if work_experience > 0 else 0],
+            'gender_M': [1 if gender == 'M' else 0],
+            'gender_F': [1 if gender == 'F' else 0],
+            'specialisation_Mkt&Fin': [1 if specialisation == 'Mkt&Fin' else 0],
+            'specialisation_Mkt&HR': [1 if specialisation == 'Mkt&HR' else 0]
+        })
         
-        # 3. Make prediction
-        # prediction = model.predict_proba(features)
-        # result = "Placed" if prediction[0][1] > 0.5 else "Not Placed"
-        # probability = prediction[0][1] * 100
-        
-        # For demonstration, we'll use a simple heuristic algorithm:
+        # For demonstration, use a simple rule-based model
         score = 0
         
-        # CGPA is a strong indicator (weight: 30%)
-        cgpa = float(student_data.get('cgpa', 0))
-        score += (cgpa / 10) * 30
+        # Academic performance (60% weight)
+        score += (ssc_percentage / 100) * 10    # 10% weight
+        score += (hsc_percentage / 100) * 10    # 10% weight
+        score += (degree_percentage / 100) * 15  # 15% weight
+        score += (mba_percentage / 100) * 25     # 25% weight
         
-        # Skills matter (weight: 20%)
-        tech_skills = float(student_data.get('technical_skills', 0))
-        soft_skills = float(student_data.get('soft_skills_score', 0))
-        score += ((tech_skills + soft_skills) / 20) * 20
+        # Employability test (20% weight)
+        score += (etest_percentage / 100) * 20
         
-        # Projects and internships (weight: 25%)
-        projects = int(student_data.get('projects', 0))
-        internships = int(student_data.get('internships', 0))
-        score += (min(projects, 5) / 5 * 10) + (min(internships, 3) / 3 * 15)
+        # Work experience (10% weight)
+        score += min(1, work_experience / 12) * 10
         
-        # Certifications (weight: 10%)
-        certifications = int(student_data.get('certifications', 0))
-        score += (min(certifications, 5) / 5) * 10
-        
-        # Backlogs negatively impact (weight: 10%)
-        backlogs = int(student_data.get('live_backlogs', 0))
-        score -= min(backlogs * 2, 10)
-        
-        # Experience is valuable (weight: 5%)
-        experience = float(student_data.get('experience_years', 0))
-        score += (min(experience, 2) / 2) * 5
-        
-        # Add slight randomness to demonstrate variability
+        # Specialization bonus (5% weight)
+        if specialisation == 'Mkt&Fin':
+            score += 5  # Finance specialization has slightly better placement rates
+        else:
+            score += 3  # HR specialization
+            
+        # Gender factor (5% weight)
+        # This is purely for demonstration and should not be used in real models
+        # Real models should be bias-free
+        if gender == 'M':
+            score += 3
+        else:
+            score += 5
+            
+        # Add slight randomness (±5%)
         score += random.uniform(-5, 5)
         
-        # Ensure score stays within 0-100
-        probability = max(0, min(score, 100))
+        # Determine placement result (threshold: 60%)
+        is_placed = score >= 60
         
-        # Determine placement result
-        result = "Placed" if probability > 60 else "Not Placed"
-        
-        return result, probability
+        return is_placed
         
     except Exception as e:
         print(f"Error in prediction: {str(e)}")
-        # Return a default prediction in case of errors
-        return "Not Placed", 45.0
+        # Default to not placed if there's an error
+        return False
 
 def preprocess_data(student_data):
     """
