@@ -117,7 +117,7 @@ def register_user(request):
                 'bio': profile.bio or '',
                 'skills': profile.skills or [],
                 'resume': profile.resume.url if profile.resume else None,
-                'resumeOriginalName': profile.resume_original_name,
+                'resumeOriginalName': profile.resume_original_name or '',
                 'profile_picture': profile.profile_picture.url if profile.profile_picture else None
             }
         }
@@ -125,6 +125,7 @@ def register_user(request):
         # Log in the user
         login(request, user)
         
+        # Create response with CORS headers
         response = Response({
             'success': True,
             'message': 'User registered successfully',
@@ -136,9 +137,10 @@ def register_user(request):
         response.set_cookie(
             'auth_token',
             token.key,
-            httponly=True,
             samesite='Lax',
-            max_age=86400  # 24 hours
+            max_age=86400,  # 24 hours
+            httponly=True,
+            secure=False  # Set to True in production with HTTPS
         )
         
         logger.info(f"User registered successfully: {user.email}")
@@ -204,6 +206,7 @@ def login_user(request):
                 }
             }
             
+            # Create response with CORS headers
             response = Response({
                 'success': True,
                 'message': 'Login successful',
@@ -215,9 +218,10 @@ def login_user(request):
             response.set_cookie(
                 'auth_token',
                 token.key,
-                httponly=True,
                 samesite='Lax',
-                max_age=86400  # 24 hours
+                max_age=86400,  # 24 hours
+                httponly=True,
+                secure=False  # Set to True in production with HTTPS
             )
             
             return response
@@ -637,114 +641,112 @@ def get_applications(request):
         }, status=500)
 
 @api_view(['POST'])
-@csrf_exempt
-@token_auth_required
+@permission_classes([AllowAny])
+@csrf_exempt  # Temporarily exempt CSRF for testing
 def chatbot_api(request):
-    """
-    API endpoint for student queries using Hugging Face models
-    """
     try:
-        # Get the user query from the request
-        user_query = request.data.get('query', '')
-        chat_history = request.data.get('history', [])
+        # Log the incoming request data for debugging
+        logger.info(f"Chatbot request received: {request.data}")
         
-        if not user_query:
-            return Response({"error": "Query is required"}, status=400)
+        # Get the query from the request
+        query = request.data.get('query', '')
+        history = request.data.get('history', [])
         
-        # Hugging Face API endpoint for inference
-        API_URL = "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf"
+        # Get user info if available
+        user_name = ""
+        if request.user and request.user.is_authenticated:
+            user_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        
+        # Prepare the conversation with system prompt
+        system_prompt = """You are WiseBot, an AI placement assistant. Your role is to help students with:
+1. Resume writing and optimization
+2. Interview preparation (technical and HR)
+3. Career guidance and job search strategies
+4. Placement process understanding
+5. Skill development recommendations
+
+Be friendly, professional, and provide specific, actionable advice. If you're unsure about something, be honest about it.
+Always maintain a supportive and encouraging tone."""
+
+        # Format conversation history
+        conversation = [{"role": "system", "content": system_prompt}]
+        
+        # Add user name to personalization if available
+        if user_name:
+            conversation[0]["content"] += f"\n\nThe student's name is {user_name}. Use their name occasionally to make the conversation more personal."
+        
+        # Add conversation history
+        for msg in history:
+            role = "user" if msg.get('isUser', True) else "assistant"
+            conversation.append({"role": role, "content": msg.get('message', '')})
+        
+        # Add current query
+        conversation.append({"role": "user", "content": query})
+        
+        # Check if Hugging Face API key is configured
+        if not hasattr(settings, 'HUGGINGFACE_API_KEY') or not settings.HUGGINGFACE_API_KEY:
+            logger.error("Hugging Face API key is not configured")
+            return Response({
+                'success': False,
+                'message': 'Chatbot service is not properly configured. Please try again later.'
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        
+        # Call Hugging Face API
         headers = {
-            "Authorization": "Bearer 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",
+            "Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}",
             "Content-Type": "application/json"
         }
-        
-        # Format the input for the model with enhanced system context
-        conversation = [
-            {
-                "role": "system", 
-                "content": """You are an advanced placement assistant for college students. Your expertise includes:
-                1. Resume Building: Help create impactful resumes, optimize content, and highlight key achievements
-                2. Interview Preparation: Guide on technical and behavioral interviews, common questions, and best practices
-                3. Career Development: Provide insights on industry trends, skill development, and career paths
-                4. Placement Process: Explain placement procedures, company expectations, and selection criteria
-                5. Technical Skills: Advise on programming languages, tools, and technologies in demand
-                6. Soft Skills: Guide on communication, leadership, and teamwork development
-                7. Profile Optimization: Help improve academic and professional profiles
-                8. Placement Prediction: Analyze placement chances based on academic performance and skills
-                
-                Provide specific, actionable advice while maintaining a supportive and encouraging tone. Focus on practical tips and real-world applications."""
-            }
-        ]
-        
-        # Add chat history
-        for msg in chat_history:
-            role = "user" if msg.get("isUser") else "assistant"
-            conversation.append({"role": role, "content": msg.get("message", "")})
-        
-        # Add the current query
-        conversation.append({"role": "user", "content": user_query})
         
         payload = {
             "inputs": conversation,
             "parameters": {
-                "max_new_tokens": 300,
+                "max_new_tokens": 500,
                 "temperature": 0.7,
                 "top_p": 0.95,
-                "do_sample": True,
-                "repetition_penalty": 1.2
+                "do_sample": True
             }
         }
         
-        # Make request to Hugging Face API
-        response = requests.post(API_URL, headers=headers, json=payload)
+        response = requests.post(
+            "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
+            headers=headers,
+            json=payload
+        )
         
         if response.status_code == 200:
-            result = response.json()
-            # Extract the generated response from the model's output
-            bot_response = result[0]["generated_text"]
+            response_data = response.json()
+            ai_response = response_data[0]['generated_text']
             
-            # For LLaMA models, extract just the assistant's last response
-            if isinstance(bot_response, str):
-                # Try to extract just the assistant's response
-                assistant_prefix = "assistant:"
-                if assistant_prefix in bot_response.lower():
-                    parts = bot_response.lower().split(assistant_prefix)
-                    if len(parts) > 1:
-                        bot_response = parts[-1].strip()
+            # Extract suggested follow-up questions if present
+            suggested_questions = []
+            if "Suggested questions:" in ai_response:
+                questions_section = ai_response.split("Suggested questions:")[1].split("\n\n")[0]
+                suggested_questions = [q.strip() for q in questions_section.split("\n") if q.strip()]
             
             return Response({
-                "response": bot_response,
-                "success": True
+                'success': True,
+                'response': ai_response,
+                'suggested_questions': suggested_questions
             })
         else:
-            # Enhanced fallback responses
-            fallback_responses = [
-                "I can help you optimize your resume, prepare for interviews, and develop your career path. What specific guidance do you need?",
-                "For placement success, focus on both technical excellence and soft skills. Which area would you like to improve first?",
-                "Your profile shows potential! Let's enhance it further by highlighting your achievements and adding relevant projects.",
-                "For technical interviews, practice coding problems and system design. Would you like specific resources or practice problems?",
-                "I can help you understand placement procedures and company expectations. What would you like to know more about?",
-                "Let's work on developing your skills. Which technical or soft skill would you like to focus on first?"
-            ]
+            logger.error(f"Hugging Face API error: {response.text}")
             return Response({
-                "response": random.choice(fallback_responses),
-                "success": True,
-                "is_fallback": True
-            })
+                'success': False,
+                'message': 'Failed to get response from AI model',
+                'error': response.text
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
     except Exception as e:
-        logger.error(f"Error in chatbot_api: {str(e)}")
+        logger.error(f"Chatbot error: {str(e)}")
         return Response({
-            "error": "An error occurred while processing your request",
-            "success": False
-        }, status=500)
+            'success': False,
+            'message': 'An error occurred while processing your request',
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # Add this function for CSRF token
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_csrf_token(request):
-    """
-    Get CSRF token for frontend to use in requests
-    """
-    csrf_token = get_token(request)
-    return JsonResponse({'csrfToken': csrf_token})
+    """Get CSRF token for frontend."""
+    return JsonResponse({'csrfToken': get_token(request)})
