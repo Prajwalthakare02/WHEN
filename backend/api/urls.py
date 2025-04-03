@@ -1,15 +1,13 @@
-from django.urls import path, include
+from django.urls import path
 from . import views
 
 urlpatterns = [
-    # API test endpoint
-    path('v1/hello', views.hello_world, name='hello_world'),
-    
-    # User API endpoints
+    # User actions
     path('v1/user/register', views.register_user, name='register_user'),
     path('v1/user/login', views.login_user, name='login_user'),
     path('v1/user/logout', views.logout_user, name='logout_user'),
     path('v1/user/profile/update', views.update_profile, name='update_profile'),
+    path('v1/user/parse-resume', views.parse_resume, name='parse_resume'),
     path('v1/user/chatbot', views.chatbot_api, name='chatbot_api'),
     path('v1/user/csrf-token', views.get_csrf_token, name='get_csrf_token'),
     

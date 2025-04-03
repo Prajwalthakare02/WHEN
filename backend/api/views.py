@@ -27,6 +27,8 @@ from django.contrib.auth import get_user_model
 import requests
 from functools import wraps
 from django.middleware.csrf import get_token
+from resume_parser.parser import ResumeParser
+import tempfile
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -34,33 +36,43 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 # Modified authentication decorator to handle both cookie and token auth
-def token_auth_required(view_func):
-    """Custom decorator that validates token from cookies or Authorization header"""
-    @wraps(view_func)
-    def _wrapped_view(request, *args, **kwargs):
-        # Log auth headers for debugging
-        logger.info(f"Auth debug - Headers: {request.headers.get('Authorization')}")
+def token_auth_required(func):
+    """
+    Decorator for views that checks if the user has a valid token,
+    redirecting to the login page if necessary
+    """
+    @wraps(func)
+    def wrapped_view(request, *args, **kwargs):
+        auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+        print(f"Auth header: {auth_header}")
         
-        # First check if user is already authenticated via session
-        if request.user and request.user.is_authenticated:
-            return view_func(request, *args, **kwargs)
+        if not auth_header or not auth_header.startswith('Bearer '):
+            logger.error(f"Authentication failed for request: {auth_header}")
+            return Response({
+                'success': False,
+                'message': 'Authentication required'
+            }, status=401)
             
-        # Then check for token in Authorization header
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token_key = auth_header.split(' ')[1]
-            try:
-                token = Token.objects.get(key=token_key)
-                request.user = token.user
-                return view_func(request, *args, **kwargs)
-            except Token.DoesNotExist:
-                logger.warning(f"Invalid token: {token_key}")
-                return Response({"success": False, "message": "Invalid token"}, status=401)
-                
-        # Finally, return unauthorized if no valid auth method
-        return Response({"success": False, "message": "Authentication required"}, status=401)
+        token_key = auth_header.split(' ')[1]
+        if token_key == 'null' or not token_key:
+            logger.error(f"Null token in request: {auth_header}")
+            return Response({
+                'success': False,
+                'message': 'Valid authentication token required'
+            }, status=401)
+            
+        try:
+            token = Token.objects.get(key=token_key)
+            request.user = token.user
+            return func(request, *args, **kwargs)
+        except Token.DoesNotExist:
+            logger.error(f"Invalid token: {token_key}")
+            return Response({
+                'success': False,
+                'message': 'Invalid authentication token'
+            }, status=401)
     
-    return _wrapped_view
+    return wrapped_view
 
 # Create your views here.
 
@@ -915,3 +927,69 @@ def chatbot_api(request):
 def get_csrf_token(request):
     """Get CSRF token for frontend."""
     return JsonResponse({'csrfToken': get_token(request)})
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@csrf_exempt
+def parse_resume(request):
+    """
+    Parse uploaded resume and extract information for placement prediction
+    """
+    try:
+        if 'file' not in request.FILES:
+            return Response({
+                'success': False,
+                'message': 'No file uploaded'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        resume_file = request.FILES['file']
+        file_extension = resume_file.name.split('.')[-1].lower()
+        
+        if file_extension not in ['pdf', 'docx']:
+            return Response({
+                'success': False,
+                'message': 'Only PDF and DOCX files are supported'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Log file details
+        logger.info(f"Processing resume file: {resume_file.name}, size: {resume_file.size} bytes")
+            
+        # Create a temporary file to store the uploaded resume
+        temp_file_path = f'temp_resume_{int(time.time())}.{file_extension}'
+        try:
+            with open(temp_file_path, 'wb+') as temp_file:
+                for chunk in resume_file.chunks():
+                    temp_file.write(chunk)
+            
+            logger.info(f"Saved temp file at {temp_file_path}")
+            
+            # Create parser instance and parse resume
+            parser = ResumeParser()
+            result = parser.parse(temp_file_path)
+            
+            return Response({
+                'success': True,
+                'message': 'Resume parsed successfully',
+                'parsed_data': result['parsed_data'],
+                'prediction_data': result['prediction_data']
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error parsing resume: {str(e)}")
+            raise e
+            
+        finally:
+            # Clean up the temporary file
+            if os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    logger.info("Temporary file deleted")
+                except Exception as e:
+                    logger.warning(f"Error deleting temporary file: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Error parsing resume: {str(e)}")
+        return Response({
+            'success': False,
+            'message': f'Error parsing resume: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
