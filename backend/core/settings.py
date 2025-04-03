@@ -217,5 +217,5 @@ CSRF_COOKIE_HTTPONLY = False  # Set to True in production
 CSRF_COOKIE_SECURE = False  # Set to True in production
 CSRF_USE_SESSIONS = True
 
-# Hugging Face API Key
-HUGGINGFACE_API_KEY = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # Replace with your actual API key
+# Hugging Face API Key for chatbot
+HUGGINGFACE_API_KEY = "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"

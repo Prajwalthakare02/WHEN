@@ -657,84 +657,119 @@ def chatbot_api(request):
         if request.user and request.user.is_authenticated:
             user_name = f"{request.user.first_name} {request.user.last_name}".strip()
         
-        # Prepare the conversation with system prompt
-        system_prompt = """You are WiseBot, an AI placement assistant. Your role is to help students with:
-1. Resume writing and optimization
-2. Interview preparation (technical and HR)
-3. Career guidance and job search strategies
-4. Placement process understanding
-5. Skill development recommendations
-
-Be friendly, professional, and provide specific, actionable advice. If you're unsure about something, be honest about it.
-Always maintain a supportive and encouraging tone."""
-
-        # Format conversation history
-        conversation = [{"role": "system", "content": system_prompt}]
-        
-        # Add user name to personalization if available
-        if user_name:
-            conversation[0]["content"] += f"\n\nThe student's name is {user_name}. Use their name occasionally to make the conversation more personal."
-        
-        # Add conversation history
-        for msg in history:
-            role = "user" if msg.get('isUser', True) else "assistant"
-            conversation.append({"role": role, "content": msg.get('message', '')})
-        
-        # Add current query
-        conversation.append({"role": "user", "content": query})
-        
-        # Check if Hugging Face API key is configured
-        if not hasattr(settings, 'HUGGINGFACE_API_KEY') or not settings.HUGGINGFACE_API_KEY:
-            logger.error("Hugging Face API key is not configured")
-            return Response({
-                'success': False,
-                'message': 'Chatbot service is not properly configured. Please try again later.'
-            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        
-        # Call Hugging Face API
-        headers = {
-            "Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}",
-            "Content-Type": "application/json"
+        # Simple rule-based responses
+        responses = {
+            "resume": "To improve your resume:\n\n- Tailor it to each job application\n- Include relevant skills and experiences\n- Use quantifiable achievements (e.g., 'increased efficiency by 20%')\n- Keep it concise (1-2 pages)\n- Use a clean, professional format\n- Proofread carefully\n- Include relevant keywords from the job description\n- Add a professional summary at the top\n\nWould you like more specific advice for any section of your resume?",
+            
+            "interview": "Preparing for interviews:\n\n- Research the company thoroughly\n- Practice common questions (technical and behavioral)\n- Prepare your own questions to ask the interviewer\n- Use the STAR method for behavioral questions\n- For technical interviews, practice coding problems daily\n- Dress professionally\n- Arrive early or set up your virtual space\n- Follow up with a thank-you email\n\nAre you preparing for a specific type of interview?",
+            
+            "technical": "For technical interviews:\n\n- Master data structures and algorithms\n- Practice coding problems on platforms like LeetCode or HackerRank\n- Review fundamentals of your programming languages\n- Be prepared to explain your thought process\n- Practice system design questions if relevant\n- Be familiar with time and space complexity analysis\n- Review projects you've worked on and be ready to discuss them\n- Prepare for both whiteboard coding and live coding sessions\n\nWhat specific technical area are you focusing on?",
+            
+            "placement": "Preparing for placement season:\n\n1. **Start Early**\n   - Begin preparation at least 3-6 months in advance\n   - Create a study plan for technical and aptitude topics\n\n2. **Build Your Profile**\n   - Update your resume with relevant projects and achievements\n   - Create/update LinkedIn profile and GitHub repository\n   - Consider getting certifications relevant to your field\n\n3. **Technical Preparation**\n   - Master data structures and algorithms\n   - Practice coding on platforms like LeetCode, HackerRank\n   - Prepare for aptitude tests (quant, logical reasoning, verbal)\n\n4. **Communication Skills**\n   - Practice for HR interviews and group discussions\n   - Work on your communication and presentation skills\n\n5. **Company Research**\n   - Research companies visiting your campus\n   - Prepare company-specific questions and answers\n   - Network with alumni working at target companies\n\n6. **Mock Interviews**\n   - Practice with peers or mentors\n   - Record yourself and review for improvement\n\nWhich aspect would you like more information about?",
+            
+            "skills": "In-demand skills to develop:\n\n**Technical Skills**\n- Programming languages: Python, JavaScript, Java\n- Web frameworks: React, Angular, Node.js\n- Data skills: SQL, data analysis, machine learning basics\n- Cloud platforms: AWS, Azure, or Google Cloud\n- DevOps: CI/CD, Docker, Kubernetes\n\n**Soft Skills**\n- Communication and presentation\n- Teamwork and collaboration\n- Problem-solving and critical thinking\n- Time management and organization\n- Adaptability and continuous learning\n\nFor your specific field, which skills are you most interested in developing?",
+            
+            "job search": "Job search strategies:\n\n- Use multiple channels: job boards, company websites, LinkedIn\n- Network with industry professionals and alumni\n- Tailor your resume and cover letter for each application\n- Set up job alerts on platforms like LinkedIn, Indeed\n- Prepare a strong online presence (LinkedIn, portfolio)\n- Follow up after applications and interviews\n- Consider internships or contract positions as entry points\n- Attend industry events and job fairs\n\nWould you like more specific advice on any of these strategies?",
+            
+            "offer": "Evaluating and negotiating job offers:\n\n- Research industry salary standards (Glassdoor, PayScale)\n- Consider the total compensation package (salary, benefits, stock options)\n- Assess growth and learning opportunities\n- Evaluate company culture and work-life balance\n- Don't be afraid to negotiate respectfully\n- Get the final offer in writing\n- Consider location and cost of living\n\nIs there a specific aspect of job offers you'd like more information about?",
+            
+            "hello": f"Hello{' ' + user_name if user_name else ''}! I'm WiseBot, your placement assistant. I can help with resume writing, interview preparation, job search strategies, and more. What would you like assistance with today?",
+            
+            "thank": f"You're welcome{' ' + user_name if user_name else ''}! If you have any more questions about placement preparation, resume building, or interview skills, feel free to ask. Good luck with your career journey!",
+            
+            "default": "I'm here to help with placement preparation, resume building, interview skills, and career advice. Could you please specify what kind of information you're looking for? For example, you can ask about resume tips, interview preparation, or in-demand skills."
         }
         
-        payload = {
-            "inputs": conversation,
-            "parameters": {
-                "max_new_tokens": 500,
-                "temperature": 0.7,
-                "top_p": 0.95,
-                "do_sample": True
-            }
+        # Lowercase the query for matching
+        query_lower = query.lower()
+        
+        # Find the best matching response
+        response_key = "default"
+        for key in responses:
+            if key in query_lower:
+                response_key = key
+                break
+        
+        # Special case for placement season which is the current query
+        if "prepare for placement season" in query_lower:
+            response_key = "placement"
+            
+        # Get the response
+        response = responses[response_key]
+        
+        # Suggested follow-up questions based on the response
+        suggested_questions = {
+            "resume": [
+                "What sections should I include in my resume?",
+                "How can I highlight my projects effectively?",
+                "How to explain gaps in my resume?",
+                "What resume format is best for freshers?"
+            ],
+            "interview": [
+                "How to prepare for HR interviews?",
+                "What are common technical interview questions?",
+                "How to handle stress during interviews?",
+                "What questions should I ask the interviewer?"
+            ],
+            "technical": [
+                "What data structures should I focus on?",
+                "How to prepare for system design interviews?",
+                "What coding platforms are best for practice?",
+                "How to improve my problem-solving skills?"
+            ],
+            "placement": [
+                "How can I improve my resume?",
+                "What are common interview questions?",
+                "Tips for technical interviews?",
+                "What skills are most in demand right now?"
+            ],
+            "skills": [
+                "What programming languages should I learn?",
+                "How important are soft skills?",
+                "Should I get certifications?",
+                "How to demonstrate my skills in interviews?"
+            ],
+            "job search": [
+                "How to use LinkedIn effectively?",
+                "How to follow up after applying?",
+                "What should be in my cover letter?",
+                "How to prepare for a job fair?"
+            ],
+            "offer": [
+                "How to negotiate salary?",
+                "What benefits should I look for?",
+                "When should I decline an offer?",
+                "How to compare multiple job offers?"
+            ],
+            "hello": [
+                "How can I improve my resume?",
+                "What are common interview questions?",
+                "Tips for technical interviews?",
+                "How to prepare for placement season?"
+            ],
+            "thank": [
+                "How can I improve my resume?",
+                "What are common interview questions?",
+                "How to prepare for technical interviews?",
+                "What skills are in demand right now?"
+            ],
+            "default": [
+                "How can I improve my resume?",
+                "What are common interview questions?",
+                "Tips for technical interviews?",
+                "How to prepare for placement season?"
+            ]
         }
         
-        response = requests.post(
-            "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
-            headers=headers,
-            json=payload
-        )
+        # Add delay to simulate thinking time (optional)
+        import time
+        time.sleep(1)
         
-        if response.status_code == 200:
-            response_data = response.json()
-            ai_response = response_data[0]['generated_text']
-            
-            # Extract suggested follow-up questions if present
-            suggested_questions = []
-            if "Suggested questions:" in ai_response:
-                questions_section = ai_response.split("Suggested questions:")[1].split("\n\n")[0]
-                suggested_questions = [q.strip() for q in questions_section.split("\n") if q.strip()]
-            
-            return Response({
-                'success': True,
-                'response': ai_response,
-                'suggested_questions': suggested_questions
-            })
-        else:
-            logger.error(f"Hugging Face API error: {response.text}")
-            return Response({
-                'success': False,
-                'message': 'Failed to get response from AI model',
-                'error': response.text
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({
+            'success': True,
+            'response': response,
+            'suggested_questions': suggested_questions.get(response_key, suggested_questions["default"])
+        })
             
     except Exception as e:
         logger.error(f"Chatbot error: {str(e)}")
